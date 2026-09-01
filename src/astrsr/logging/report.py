@@ -26,18 +26,30 @@ def _fmt_metric(value: Any) -> str:
     return f"{number:.4f}"
 
 
+def _own_method_note(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    scale = row.get("total_scale") or payload.get("planned_total_scale")
+    mode = row.get("upsample_mode")
+    if mode == "direct_interpolation" and scale:
+        return f"own interpolator {scale}x"
+    if mode == "chained_own_infer" and scale:
+        return f"own method {scale}x"
+    if scale:
+        return f"own method {scale}x"
+    return "own method"
+
+
 def results_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """One-shot methods, gated mosaic, and the image the algorithm actually kept."""
+    """Each method on its own, gated mosaic, and the image the algorithm actually kept."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in payload.get("solely") or []:
-        rows.append({**row, "note": "one-shot 2x"})
+        rows.append({**row, "note": _own_method_note(row, payload)})
         seen.add(str(row.get("name")))
     for row in payload.get("baselines") or []:
         name = str(row.get("name"))
         if name in seen:
             continue
-        rows.append({**row, "note": "baseline"})
+        rows.append({**row, "note": _own_method_note(row, payload)})
         seen.add(name)
     for step in payload.get("steps") or []:
         tm = step.get("truth_metrics") or {}
@@ -78,7 +90,7 @@ def results_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def render_results_table(rows: list[dict[str, Any]]) -> str:
     lines = [
-        "| method | psnr | ssim | flux_error | centroid_error | error_vs_truth | note |",
+        "| method | psnr | ssim | flux_error | centroid_obs_px | error_vs_truth | note |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
@@ -95,21 +107,30 @@ def retry_history_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for step in payload.get("steps") or []:
         for row in step.get("retry_history") or []:
-            rows.append({**row, "step": step.get("index")})
+            rows.append(
+                {
+                    **row,
+                    "step": step.get("index"),
+                    "total_scale": step.get("total_scale"),
+                }
+            )
     return rows
 
 
 def render_retry_table(rows: list[dict[str, Any]]) -> str:
     lines = [
-        "| retry | accepted | psnr | ssim | flux_error | error_vs_truth | tiles |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| step | scale | retry | accepted | psnr | ssim | flux_error | centroid_obs_px | error_vs_truth | tiles |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         accepted = row.get("accepted")
         accepted_txt = "" if accepted is None else f"{100.0 * float(accepted):.2f}%"
+        scale = row.get("total_scale")
+        scale_txt = "" if scale is None else f"{scale}x"
         lines.append(
-            f"| {row.get('retry', '')} | {accepted_txt} | {_fmt_metric(row.get('psnr'))} | "
-            f"{_fmt_metric(row.get('ssim'))} | {_fmt_metric(row.get('flux_error'))} | "
+            f"| {row.get('step', '')} | {scale_txt} | {row.get('retry', '')} | {accepted_txt} | "
+            f"{_fmt_metric(row.get('psnr'))} | {_fmt_metric(row.get('ssim'))} | "
+            f"{_fmt_metric(row.get('flux_error'))} | {_fmt_metric(row.get('centroid_error'))} | "
             f"{_fmt_pct(row.get('error_vs_truth_rate'))} | {row.get('n_tiles', '')} |"
         )
     return "\n".join(lines)
@@ -168,11 +189,14 @@ def render_report(payload: dict[str, Any]) -> str:
     lines.append(render_results_table(results_table_rows(payload)))
     lines.append("")
     lines.append(
-        "One-shot rows are each method alone. "
-        "`gated mosaic` is the spatial keep after this 2x. "
+        "Own-method rows are that reconstructor alone, taken to the same total scale "
+        "as the gated loop. Interpolation zooms once. 2x models are applied hop by hop "
+        "to their own output. None of those rows go through consensus, gates, or spatial keep. "
+        "`gated mosaic` is the spatial keep after that 2x. "
         "`accepted product` is what the algorithm returns, including a freeze at the observation if nothing passed. "
         "`error_vs_truth` is 0% if identical to the held-out reference and 100% for total loss, "
-        "from PSNR, SSIM, and flux error."
+        "from PSNR, SSIM, and flux error. "
+        "`centroid_obs_px` is the centroid shift in observation (y) pixels so 2x/4x/8x mosaics are comparable."
     )
     lines.append("")
     retry_rows = retry_history_rows(payload)

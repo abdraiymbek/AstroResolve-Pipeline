@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from astrsr.evaluation.metrics import (
     centroid,
@@ -28,6 +29,24 @@ def test_flux_and_centroid_shift() -> None:
 def test_psnr_identity_is_high() -> None:
     image = np.linspace(0, 1, 64).reshape(8, 8)
     assert psnr(image, image) > 80
+
+
+def test_centroid_error_is_scale_invariant_in_obs_pixels() -> None:
+    reference = np.zeros((16, 16), dtype=np.float64)
+    reference[8, 8] = 5.0
+    fine = np.zeros((16, 16), dtype=np.float64)
+    fine[8, 10] = 5.0
+    coarse = np.zeros((8, 8), dtype=np.float64)
+    coarse[4, 5] = 5.0
+    observation = np.zeros((4, 4), dtype=np.float64)
+    observation[2, 2] = 5.0
+    fine_m = evaluate_against_reference(reference, fine, None, win_size=3, observation=observation)
+    coarse_m = evaluate_against_reference(reference, coarse, None, win_size=3, observation=observation)
+    assert fine_m["centroid_error_grid_px"] == 2.0
+    assert coarse_m["centroid_error_grid_px"] == 1.0
+    assert fine_m["centroid_error"] == pytest.approx(0.5)
+    assert coarse_m["centroid_error"] == pytest.approx(fine_m["centroid_error"])
+    assert fine_m["centroid_error_ref_px"] == pytest.approx(2.0)
 
 
 def test_evaluate_coarser_estimate_downsamples_reference() -> None:

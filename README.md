@@ -26,9 +26,11 @@ uv run astrsr report --run-id <id>
 
 Gate thresholds in the YAML are placeholders. A conservative `min_agreement` will abstain and keep the observation. That is the intended behavior, not a crash. Loosen a knob with `--set` when you want to see a 2x accepted.
 
-`uv run astrsr compare --config configs/p0_compare.yaml` runs each zoo member once, then the gated combination on the same observation.
+`uv run astrsr compare --config configs/p0_compare.yaml` runs each zoo member to the same total scale as the gated loop, then the gated combination on the same observation.
 
-After a run finishes, a markdown **results table** is printed at the end of the terminal output (one-shot methods, gated mosaic, accepted product). The same table is in `runs/<run_id>/report.md` under **Results vs held-out reference**. Re-print it with `uv run astrsr report --run-id <id>`.
+For an 8x fair comparison (256 truth grid, 32×32 observation), use `configs/p0_compare_256.yaml`. Own-method rows chain each reconstructor to 8x (interpolation zooms once; 2x models hop on their own output). All metrics are scored on the full reference grid. **`centroid_obs_px`** is centroid error in observation pixels (angular scale of y), not raw grid pixels — so 2x/4x/8x mosaics can be compared without the ~2× inflation per zoom level.
+
+After a run finishes, a markdown **results table** is printed at the end of the terminal output. The same table is in `runs/<run_id>/report.md` under **Results vs held-out reference**. Re-print it with `uv run astrsr report --run-id <id>`.
 
 Spatial keep defaults live under `recursion.spatial`. **`max_retries` (default 10) is one budget for the entire 2x step**, not per tile and not reset when a small fraction fails: retry 0 is the first full-field ensemble; retries 1–10 re-attack only pixels that still fail, while passing pixels stay frozen. Step artifacts include `success_mask.npy`, per-retry mosaics under `steps/00/retries/rXX/`, and `error_vs_truth.npy` (0% = identical to held-out reference at that pixel, 100% = total loss, from local PSNR/SSIM/flux terms).
 

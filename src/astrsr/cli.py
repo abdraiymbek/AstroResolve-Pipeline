@@ -95,7 +95,7 @@ def compare(
         exists=True,
         readable=True,
         path_type=Path,
-        help="Runs each zoo member solely, then the gated consensus on the same observation.",
+        help="Each zoo member on its own to the planned total scale, then gated consensus on the same observation.",
     ),
     set: Optional[list[str]] = typer.Option(None, "--set"),
     seed: Optional[int] = typer.Option(None, "--seed"),

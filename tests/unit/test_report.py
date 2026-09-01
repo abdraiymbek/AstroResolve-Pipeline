@@ -14,14 +14,34 @@ def _payload() -> dict:
         "config_hash": "abc",
         "seed": 1,
         "device": "cpu",
-        "data": {"source": "synthetic_fixture"},
+        "data": {
+            "source": "synthetic_fixture",
+            "observation_shape": [32, 32],
+            "reference_shape": [64, 64],
+        },
         "model": {"name": "fake_sr"},
         "baselines": [
             {"name": "bicubic", "psnr": 24.1, "ssim": 0.46, "flux_error": 0.09, "centroid_error": 0.6}
         ],
         "solely": [
-            {"name": "bicubic", "psnr": 24.1, "ssim": 0.46, "flux_error": 0.09, "centroid_error": 0.6},
-            {"name": "swin2sr_x2", "psnr": 18.4, "ssim": 0.28, "flux_error": 0.05, "centroid_error": 0.65},
+            {
+                "name": "bicubic",
+                "psnr": 24.1,
+                "ssim": 0.46,
+                "flux_error": 0.09,
+                "centroid_error": 0.6,
+                "total_scale": 2,
+                "upsample_mode": "direct_interpolation",
+            },
+            {
+                "name": "swin2sr_x2",
+                "psnr": 18.4,
+                "ssim": 0.28,
+                "flux_error": 0.05,
+                "centroid_error": 0.65,
+                "total_scale": 2,
+                "upsample_mode": "chained_own_infer",
+            },
         ],
         "steps": [
             {
@@ -86,8 +106,10 @@ def test_results_table_includes_mosaic_and_product() -> None:
     assert "gated mosaic 2x" in names
     assert "accepted product" in names
     table = render_results_table(rows)
-    assert "| method | psnr | ssim | flux_error | centroid_error | error_vs_truth | note |" in table
+    assert "| method | psnr | ssim | flux_error | centroid_obs_px | error_vs_truth | note |" in table
     assert "keep 42%" in table
+    assert "own interpolator 2x" in table
+    assert "own method 2x" in table
 
 
 def test_retry_table_lists_each_pass() -> None:
@@ -97,6 +119,7 @@ def test_retry_table_lists_each_pass() -> None:
     assert "42.00%" in table
     assert "51.00%" in table
     assert "18.20%" in table
+    assert "| step | scale | retry |" in table
 
 
 def test_report_puts_results_table_near_the_top() -> None:

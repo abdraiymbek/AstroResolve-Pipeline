@@ -8,6 +8,7 @@ from astrsr.evaluation.metrics import (
     flux_rel_error,
     psnr,
     reduced_chi2,
+    scale_centroid_error,
     ssim,
     total_flux,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "flux_rel_error",
     "psnr",
     "reduced_chi2",
+    "scale_centroid_error",
     "ssim",
     "total_flux",
 ]

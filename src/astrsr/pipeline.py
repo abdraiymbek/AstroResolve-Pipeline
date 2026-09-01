@@ -20,11 +20,12 @@ from astrsr.evaluation.metrics import (
     reduced_chi2,
 )
 from astrsr.logging.report import conclude, render_report
+from astrsr.models.baselines import interpolate
 from astrsr.models.registry import build_baseline, build_primary_model, build_zoo
 from astrsr.provenance import initialize_run, mark_completed, write_json
 from astrsr.recursion.gates import evaluate_gates
 from astrsr.recursion.spatial import apply_spatial_keep
-from astrsr.utils.arrays import save_fits, save_npy, save_preview_png
+from astrsr.utils.arrays import as_float_image, save_fits, save_npy, save_preview_png
 
 
 def _save_truth_maps(
@@ -67,6 +68,22 @@ def _metrics_row(name: str, metrics: dict[str, Any] | None) -> dict[str, Any]:
     return row
 
 
+def _truth_metrics(
+    reference: np.ndarray,
+    estimate: np.ndarray,
+    disagreement: np.ndarray | None,
+    config: AppConfig,
+    observation: np.ndarray,
+) -> dict[str, Any]:
+    return evaluate_against_reference(
+        reference,
+        estimate,
+        disagreement,
+        win_size=config.evaluation.ssim_win_size,
+        observation=observation,
+    )
+
+
 def load_reference(config: AppConfig) -> tuple[np.ndarray, dict[str, Any]]:
     if config.data.source == "synthetic_fixture":
         return generate_fixture(config.data.fixture, config.data.size, config.run.seed)
@@ -103,6 +120,50 @@ def planned_steps(config: AppConfig) -> list[int]:
     return factors
 
 
+def planned_total_scale(factors: list[int]) -> int:
+    total = 1
+    for factor in factors:
+        total *= int(factor)
+    return total
+
+
+def own_method_to_planned_scale(model: Any, observation: np.ndarray, factors: list[int]) -> np.ndarray:
+    """Take one model's own reconstructor to the planned total scale.
+
+    This is not the gated algorithm. No ensemble, consensus, uncertainty
+    gates, forward-consistency check, or spatial keep. Interpolation zooms
+    once with that interpolator. 2x reconstructors are applied to their own
+    previous output, hop by hop.
+    """
+    if not factors:
+        return as_float_image(observation)
+    total = planned_total_scale(factors)
+    meta = model.metadata() if hasattr(model, "metadata") else {}
+    if meta.get("kind") == "interpolation":
+        return interpolate(observation, total, model.name)
+    current = observation
+    for factor in factors:
+        scale = getattr(model, "scale", factor)
+        if scale != factor:
+            raise ValueError(
+                f"Model {getattr(model, 'name', model)} scale {scale} cannot take hop {factor}"
+            )
+        current = model.infer(current)
+    return current
+
+
+def _own_upsample_record(model: Any, factors: list[int]) -> dict[str, Any]:
+    total = planned_total_scale(factors)
+    meta = model.metadata() if hasattr(model, "metadata") else {}
+    mode = "direct_interpolation" if meta.get("kind") == "interpolation" else "chained_own_infer"
+    return {
+        "planned_factors": list(factors),
+        "total_scale": total,
+        "upsample_mode": mode,
+        "uses_gated_algorithm": False,
+    }
+
+
 def run_experiment(
     config: AppConfig,
     repo_root: Path,
@@ -135,24 +196,28 @@ def run_experiment(
     else:
         models = [build_primary_model(config, device=device)]
     primary = models[0]
+    steps = planned_steps(config)
+    total_planned = planned_total_scale(steps)
     baseline_rows: list[dict[str, Any]] = []
     baseline_dir = run_dir / "baselines"
     for name in config.models.baselines:
         model = build_baseline(name, config)
-        output = model.infer(observation)
+        output = own_method_to_planned_scale(model, observation, steps)
         target = baseline_dir / name
         _save_image(target, "reconstruction", output, config.logging.save_previews)
-        write_json(target / "metadata.json", model.metadata())
+        record = {**model.metadata(), **_own_upsample_record(model, steps)}
+        write_json(target / "metadata.json", record)
         truth = None
         if config.evaluation.compare_to_reference:
             try:
-                truth = evaluate_against_reference(
-                    reference, output, None, win_size=config.evaluation.ssim_win_size
-                )
+                truth = _truth_metrics(reference, output, None, config, observation)
                 write_json(target / "metrics.json", truth)
             except ValueError as exc:
                 write_json(target / "metrics.json", {"error": str(exc)})
-        baseline_rows.append(_metrics_row(name, truth))
+        row = _metrics_row(name, truth)
+        row.update(_own_upsample_record(model, steps))
+        row["shape"] = list(output.shape)
+        baseline_rows.append(row)
 
     current = observation
     last_accepted = observation
@@ -161,27 +226,35 @@ def run_experiment(
     step_summaries: list[dict[str, Any]] = []
     failures: list[str] = []
     stop_reason = "no_steps"
-    steps = planned_steps(config)
     disagreement_accepted = np.zeros_like(observation)
 
     sole_rows: list[dict[str, Any]] = []
     if config.ensemble.mode == "model_zoo":
         for zoo_model in models:
-            output = zoo_model.infer(observation)
+            output = own_method_to_planned_scale(zoo_model, observation, steps)
             target = run_dir / "solely" / zoo_model.name
             _save_image(target, "reconstruction", output, config.logging.save_previews)
-            write_json(target / "metadata.json", zoo_model.metadata())
+            record = {**zoo_model.metadata(), **_own_upsample_record(zoo_model, steps)}
+            write_json(target / "metadata.json", record)
             truth = None
             if config.evaluation.compare_to_reference:
                 try:
-                    truth = evaluate_against_reference(
-                        reference, output, None, win_size=config.evaluation.ssim_win_size
-                    )
+                    truth = _truth_metrics(reference, output, None, config, observation)
                     write_json(target / "metrics.json", truth)
                 except ValueError as exc:
                     write_json(target / "metrics.json", {"error": str(exc)})
-            sole_rows.append(_metrics_row(zoo_model.name, truth))
-            print(f"sole {zoo_model.name} psnr={None if not truth else truth.get('psnr')}", flush=True)
+            row = _metrics_row(zoo_model.name, truth)
+            row.update(_own_upsample_record(zoo_model, steps))
+            row["shape"] = list(output.shape)
+            sole_rows.append(row)
+            compared = None if not truth else truth.get("compared_at_shape")
+            print(
+                f"sole {zoo_model.name} own {total_planned}x "
+                f"shape={output.shape[0]}x{output.shape[1]} "
+                f"compared_at={compared} "
+                f"psnr={None if not truth else truth.get('psnr')}",
+                flush=True,
+            )
 
     for step_index, factor in enumerate(steps):
         for zoo_model in models:
@@ -275,11 +348,8 @@ def run_experiment(
                 snap_truth: dict[str, Any] | None = None
                 if config.evaluation.compare_to_reference:
                     try:
-                        snap_truth = evaluate_against_reference(
-                            reference,
-                            snap.mosaic,
-                            None,
-                            win_size=config.evaluation.ssim_win_size,
+                        snap_truth = _truth_metrics(
+                            reference, snap.mosaic, None, config, observation
                         )
                     except ValueError as exc:
                         snap_truth = {"error": str(exc)}
@@ -290,6 +360,9 @@ def run_experiment(
                     "psnr": _json_metric(None if not snap_truth else snap_truth.get("psnr")),
                     "ssim": _json_metric(None if not snap_truth else snap_truth.get("ssim")),
                     "flux_error": _json_metric(None if not snap_truth else snap_truth.get("flux_error")),
+                    "centroid_error": _json_metric(
+                        None if not snap_truth else snap_truth.get("centroid_error")
+                    ),
                     "error_vs_truth_rate": _json_metric(
                         None if not snap_truth else snap_truth.get("error_vs_truth_rate")
                     ),
@@ -341,12 +414,7 @@ def run_experiment(
         truth = None
         if config.evaluation.compare_to_reference:
             try:
-                truth = evaluate_against_reference(
-                    reference,
-                    product,
-                    product_mad,
-                    win_size=config.evaluation.ssim_win_size,
-                )
+                truth = _truth_metrics(reference, product, product_mad, config, observation)
             except ValueError as exc:
                 truth = {"error": str(exc)}
 
@@ -438,11 +506,12 @@ def run_experiment(
     accepted_truth = None
     if config.evaluation.compare_to_reference:
         try:
-            accepted_truth = evaluate_against_reference(
+            accepted_truth = _truth_metrics(
                 reference,
                 last_accepted,
                 disagreement_accepted if disagreement_accepted.shape == last_accepted.shape else None,
-                win_size=config.evaluation.ssim_win_size,
+                config,
+                observation,
             )
         except ValueError as exc:
             accepted_truth = {"error": str(exc)}
@@ -477,6 +546,8 @@ def run_experiment(
             "ensemble_samples": len(member_records) if step_summaries else config.ensemble.samples,
             "stochasticity": config.ensemble.stochasticity.source,
         },
+        "planned_steps": list(steps),
+        "planned_total_scale": total_planned,
         "baselines": baseline_rows,
         "solely": sole_rows,
         "steps": step_summaries,

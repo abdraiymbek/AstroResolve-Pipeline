@@ -44,6 +44,15 @@ def test_p0_fake_yaml_loads() -> None:
     assert cfg.recursion.spatial.max_retries == 10
 
 
+def test_p0_compare_256_yaml_loads() -> None:
+    cfg = load_yaml_config(Path("configs/p0_compare_256.yaml"))
+    assert cfg.data.size == 256
+    assert cfg.degradation.scale_factor == 8
+    assert cfg.recursion.factors == [2, 2, 2]
+    assert cfg.recursion.max_depth == 3
+    assert cfg.recursion.spatial.max_retries == 10
+
+
 def test_spatial_override() -> None:
     cfg = apply_overrides(AppConfig(), ["recursion.spatial.enabled=false", "recursion.spatial.min_tile=8"])
     assert cfg.recursion.spatial.enabled is False

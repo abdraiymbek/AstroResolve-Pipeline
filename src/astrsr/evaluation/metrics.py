@@ -124,6 +124,19 @@ def centroid_error(reference: np.ndarray, estimate: np.ndarray) -> float:
     return float(np.hypot(ry - ey, rx - ex))
 
 
+def scale_centroid_error(grid_pixels: float, compared_shape: tuple[int, int], target_shape: tuple[int, int]) -> float:
+    """Convert a centroid shift from the comparison grid onto another pixel scale."""
+    if not np.isfinite(grid_pixels):
+        return float("nan")
+    if compared_shape[0] <= 0 or compared_shape[1] <= 0:
+        raise ValueError(f"Invalid comparison shape {compared_shape}")
+    fy = target_shape[0] / compared_shape[0]
+    fx = target_shape[1] / compared_shape[1]
+    if abs(fy - fx) > 1e-9:
+        raise ValueError(f"Anisotropic centroid scale {fy} vs {fx}")
+    return float(grid_pixels * fy)
+
+
 def reduced_chi2(residual: np.ndarray, sigma: np.ndarray) -> float:
     var = np.clip(as_float_image(sigma) ** 2, 1e-12, None)
     chi = (as_float_image(residual) ** 2) / var
@@ -171,23 +184,35 @@ def evaluate_against_reference(
     estimate: np.ndarray,
     disagreement: np.ndarray | None,
     win_size: int,
+    observation: np.ndarray | None = None,
 ) -> dict[str, Any]:
     matched, ref = align_for_comparison(estimate, reference)
     error = np.abs(matched - ref)
     psnr_value = psnr(ref, matched)
     ssim_value = ssim(ref, matched, win_size=win_size)
     flux_value = flux_rel_error(ref, matched)
+    grid_centroid = centroid_error(ref, matched)
+    compared_shape = ref.shape
+    native_ref = as_float_image(reference).shape
+    centroid_ref = scale_centroid_error(grid_centroid, compared_shape, native_ref)
+    if observation is not None:
+        centroid_obs = scale_centroid_error(grid_centroid, compared_shape, as_float_image(observation).shape)
+    else:
+        centroid_obs = centroid_ref
     metrics: dict[str, Any] = {
         "psnr": psnr_value,
         "ssim": ssim_value,
         "flux_error": flux_value,
-        "centroid_error": centroid_error(ref, matched),
+        "centroid_error": centroid_obs,
+        "centroid_error_obs_px": centroid_obs,
+        "centroid_error_ref_px": centroid_ref,
+        "centroid_error_grid_px": grid_centroid,
         "mean_abs_error": float(error.mean()),
         "error_vs_truth_rate": error_vs_truth_rate(psnr_value, ssim_value, flux_value),
-        "compared_at_shape": list(ref.shape),
+        "compared_at_shape": list(compared_shape),
         "estimate_shape": list(estimate.shape),
-        "reference_shape": list(reference.shape),
-        "downsampled_for_truth": list(estimate.shape) != list(reference.shape),
+        "reference_shape": list(native_ref),
+        "downsampled_for_truth": list(estimate.shape) != list(native_ref),
     }
     if disagreement is not None:
         dmatch, _ = align_for_comparison(disagreement, ref)

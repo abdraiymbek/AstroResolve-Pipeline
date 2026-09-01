@@ -1,0 +1,105 @@
+run:
+  name: p0_compare_256
+  seed: 20260831
+  output_dir: runs
+  device: auto
+  deterministic: true
+
+data:
+  source: synthetic_fixture
+  fixture: galaxy
+  size: 256
+  channels: [intensity]
+  preserve_units: true
+  normalization: documented_linear
+  split: test
+
+degradation:
+  enabled: true
+  scale_factor: 8
+  psf:
+    type: gaussian
+    fwhm_pixels: 1.5
+  sampling:
+    pixel_integration: true
+    kernel: area
+  noise:
+    shot: true
+    read_sigma: 0.01
+    background: 0.02
+  artifacts:
+    cosmic_ray_probability: 0.0
+    saturation: false
+
+models:
+  baselines: [bicubic]
+  pretrained:
+    name: swin2sr_x2
+    checkpoint: caidas/swin2SR-classical-sr-x2-64
+    scale: 2
+    license: Apache-2.0
+    noise_sigma: 0.0
+    bias: 0.0
+
+ensemble:
+  enabled: true
+  mode: model_zoo
+  zoo:
+    - bicubic
+    - lanczos
+    - wiener
+    - richardson_lucy
+    - swin2sr_x2
+  samples: 6
+  stochasticity:
+    source: model_zoo
+    input_sigma_rel: 0.0
+    tta: false
+    tta_per_member: 1
+    seed_stride: 1000
+  retain_members: true
+  filtering:
+    method: mad
+    threshold: 3.5
+  consensus:
+    method: median
+    trim_fraction: 0.1
+  uncertainty:
+    maps: [std, mad, percentile_interval]
+    percentile_low: 10.0
+    percentile_high: 90.0
+
+recursion:
+  enabled: true
+  unconditional: false
+  factors: [2, 2, 2]
+  max_depth: 3
+  spatial:
+    enabled: true
+    retry_failed_tiles: true
+    min_tile: 16
+    overlap: 4
+    max_retries: 10
+    min_success_fraction_to_continue: 0.25
+    max_residual_sigma: 2.5
+  gates:
+    min_agreement: 0.45
+    max_relative_uncertainty: 1.5
+    require_forward_consistency: true
+    max_reduced_chi2: 2.5
+    require_photometric_check: true
+    max_flux_rel_error: 0.08
+    max_metric_regression: 0.02
+
+evaluation:
+  metrics: [psnr, ssim, flux_error, centroid_error]
+  save_error_maps: true
+  compare_to_reference: true
+  ssim_win_size: 7
+
+logging:
+  save_config: true
+  save_environment: true
+  export_elabftw: true
+  include_failure_cases: true
+  save_previews: true
