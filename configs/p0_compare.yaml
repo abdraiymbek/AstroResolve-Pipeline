@@ -50,7 +50,6 @@ ensemble:
     - wiener
     - richardson_lucy
     - swin2sr_x2
-    - galaxy_restormer
   samples: 6
   stochasticity:
     source: model_zoo
@@ -75,6 +74,14 @@ recursion:
   unconditional: false
   factors: [2]
   max_depth: 1
+  spatial:
+    enabled: true
+    retry_failed_tiles: true
+    min_tile: 16
+    overlap: 4
+    max_retries: 1
+    min_success_fraction_to_continue: 0.25
+    max_residual_sigma: 2.5
   gates:
     min_agreement: 0.45
     max_relative_uncertainty: 1.5

@@ -8,9 +8,19 @@ from typing import Optional
 import typer
 
 from astrsr.config import apply_overrides, load_yaml_config
+from astrsr.logging.report import render_results_table, results_table_rows
 from astrsr.pipeline import run_experiment
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False, add_completion=False)
+
+
+def _echo_results_table(result: dict) -> None:
+    typer.echo("")
+    typer.echo("Results vs held-out reference")
+    typer.echo("-" * 60)
+    typer.echo(render_results_table(results_table_rows(result)))
+    typer.echo("-" * 60)
+    typer.echo("Full report: report.md in run_dir (or: astrsr report --run-id <id>)")
 
 
 def _repo_root() -> Path:
@@ -60,6 +70,7 @@ def run(
         return
     typer.echo(f"run_id={result['run_id']}")
     typer.echo(f"run_dir={result['run_dir']}")
+    _echo_results_table(result)
     typer.echo(f"stop_reason={result['accepted']['stop_reason']}")
     typer.echo(f"accepted_depth={result['accepted']['depth']}")
     typer.echo(f"report={Path(result['run_dir']) / 'report.md'}")
@@ -90,16 +101,7 @@ def compare(
         return
     typer.echo(f"run_id={result['run_id']}")
     typer.echo(f"run_dir={result['run_dir']}")
-    typer.echo("solely:")
-    for row in result.get("solely") or []:
-        typer.echo(f"  {row['name']}: psnr={row.get('psnr')} ssim={row.get('ssim')} flux={row.get('flux_error')}")
-    if result["steps"]:
-        step = result["steps"][0]
-        tm = step.get("truth_metrics") or {}
-        typer.echo(
-            f"gated_candidate: decision={step['decision']} psnr={tm.get('psnr')} "
-            f"agreement={step['mean_agreement']:.4f} chi2={step['reduced_chi2']:.3f}"
-        )
+    _echo_results_table(result)
     typer.echo(f"accepted_depth={result['accepted']['depth']} stop={result['accepted']['stop_reason']}")
     typer.echo(f"report={Path(result['run_dir']) / 'report.md'}")
 

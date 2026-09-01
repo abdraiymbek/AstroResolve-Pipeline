@@ -40,3 +40,10 @@ def test_p0_smoke_yaml_loads() -> None:
 def test_p0_fake_yaml_loads() -> None:
     cfg = load_yaml_config(Path("configs/p0_fake.yaml"))
     assert cfg.models.pretrained.name == "fake_sr"
+    assert cfg.recursion.spatial.enabled is True
+
+
+def test_spatial_override() -> None:
+    cfg = apply_overrides(AppConfig(), ["recursion.spatial.enabled=false", "recursion.spatial.min_tile=8"])
+    assert cfg.recursion.spatial.enabled is False
+    assert cfg.recursion.spatial.min_tile == 8

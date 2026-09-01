@@ -142,12 +142,58 @@ class GateConfig(FrozenModel):
     max_metric_regression: float = 0.02
 
 
+class SpatialConfig(FrozenModel):
+    enabled: bool = True
+    retry_failed_tiles: bool = True
+    min_tile: int = 16
+    overlap: int = 4
+    max_retries: int = 1
+    min_success_fraction_to_continue: float = 0.25
+    max_residual_sigma: float = 2.5
+
+    @field_validator("min_tile")
+    @classmethod
+    def min_tile_positive(cls, value: int) -> int:
+        if value < 2:
+            raise ValueError("recursion.spatial.min_tile must be >= 2")
+        return value
+
+    @field_validator("overlap")
+    @classmethod
+    def overlap_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("recursion.spatial.overlap must be >= 0")
+        return value
+
+    @field_validator("max_retries")
+    @classmethod
+    def retries_nonnegative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("recursion.spatial.max_retries must be >= 0")
+        return value
+
+    @field_validator("min_success_fraction_to_continue")
+    @classmethod
+    def continue_fraction_in_unit_interval(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("recursion.spatial.min_success_fraction_to_continue must be in [0, 1]")
+        return value
+
+    @field_validator("max_residual_sigma")
+    @classmethod
+    def residual_sigma_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("recursion.spatial.max_residual_sigma must be > 0")
+        return value
+
+
 class RecursionConfig(FrozenModel):
     enabled: bool = True
     unconditional: bool = False
     factors: list[int] = Field(default_factory=lambda: [2, 2])
     max_depth: int = 2
     gates: GateConfig = Field(default_factory=GateConfig)
+    spatial: SpatialConfig = Field(default_factory=SpatialConfig)
 
     @field_validator("factors")
     @classmethod

@@ -18,6 +18,7 @@ from astrsr.logging.report import conclude, render_report
 from astrsr.models.registry import build_baseline, build_primary_model, build_zoo
 from astrsr.provenance import initialize_run, mark_completed, write_json
 from astrsr.recursion.gates import evaluate_gates
+from astrsr.recursion.spatial import apply_spatial_keep
 from astrsr.utils.arrays import save_fits, save_npy, save_preview_png
 
 
@@ -182,13 +183,93 @@ def run_experiment(
             n_steps=len(steps),
             config=config.recursion,
         )
+        product = consensus
+        product_mad = mad_map
+        decision = gate.decision
+        continue_recursion = gate.continue_recursion
+        success_fraction = 1.0 if gate.decision == "accepted" else 0.0
+        n_retry_tiles = 0
+        spatial_payload: dict[str, Any] | None = None
+        success_mask: np.ndarray | None = None
+        rel_map: np.ndarray | None = None
+        z_map: np.ndarray | None = None
+        last_step = step_index >= len(steps) - 1 or (step_index + 1) >= config.recursion.max_depth
+
+        if config.recursion.spatial.enabled and not config.recursion.unconditional:
+            def _retry_fn(crop: np.ndarray, tile_index: int) -> tuple[np.ndarray, np.ndarray]:
+                tile_members, _ = sample_ensemble(
+                    crop,
+                    models,
+                    config.ensemble,
+                    base_seed=config.run.seed + step_index * 17 + 10_000 + tile_index,
+                )
+                tile_cons, tile_maps, _ = build_consensus(tile_members, config.ensemble)
+                tile_mad = tile_maps.get("mad", tile_maps.get("std"))
+                if tile_mad is None:
+                    raise RuntimeError("Tile consensus did not produce a disagreement map")
+                return tile_cons, tile_mad
+
+            def _reproject(mosaic: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                proj, sig = forward_project_to_observation(
+                    mosaic, observation, config.degradation, total_scale=total_scale
+                )
+                return proj - observation, sig
+
+            spatial = apply_spatial_keep(
+                consensus=consensus,
+                mad_map=mad_map,
+                residual=residual,
+                sigma=sigma,
+                fallback=current,
+                input_image=current,
+                total_scale=total_scale,
+                scale_factor=factor,
+                config=config.recursion,
+                retry_fn=_retry_fn,
+                reproject_fn=_reproject,
+            )
+            product = spatial.mosaic
+            product_mad = spatial.mad_map
+            projected, sigma = forward_project_to_observation(
+                product, observation, config.degradation, total_scale=total_scale
+            )
+            residual = projected - observation
+            chi2 = reduced_chi2(residual, sigma)
+            flux_err = flux_rel_error(observation, projected)
+            success_fraction = spatial.success_fraction
+            n_retry_tiles = spatial.n_retry_tiles
+            success_mask = spatial.mask
+            rel_map = spatial.relative_uncertainty
+            z_map = spatial.residual_sigma
+            spatial_payload = {
+                "success_fraction": success_fraction,
+                "n_retry_tiles": n_retry_tiles,
+                "retry_tiles": [[int(a), int(b), int(c), int(d)] for a, b, c, d in spatial.retry_tiles],
+                "global_gate": gate.as_dict(),
+            }
+            if success_fraction <= 0.0:
+                decision = gate.decision if gate.decision != "accepted" else "rejected_spatial"
+                continue_recursion = False
+            else:
+                fully_kept = success_fraction >= 1.0 - 1e-12
+                decision = "accepted" if fully_kept and gate.decision == "accepted" else "accepted_spatial"
+                continue_recursion = (
+                    not last_step
+                    and success_fraction >= config.recursion.spatial.min_success_fraction_to_continue
+                )
+                if (
+                    config.recursion.gates.require_photometric_check
+                    and flux_err > config.recursion.gates.max_flux_rel_error
+                ):
+                    continue_recursion = False
+
         truth = None
         if config.evaluation.compare_to_reference:
             try:
                 truth = evaluate_against_reference(
                     reference,
-                    consensus,
-                    mad_map,
+                    product,
+                    product_mad,
                     win_size=config.evaluation.ssim_win_size,
                 )
             except ValueError as exc:
@@ -199,17 +280,28 @@ def run_experiment(
             for idx, member in enumerate(members):
                 save_npy(step_dir / "members" / f"k{idx:03d}.npy", member)
         _save_image(step_dir, "consensus", consensus, config.logging.save_previews)
+        _save_image(step_dir, "mosaic", product, config.logging.save_previews)
         _save_image(step_dir, "forward_projection", projected, config.logging.save_previews)
         _save_image(step_dir, "residual", residual, config.logging.save_previews)
+        if success_mask is not None and rel_map is not None and z_map is not None:
+            save_npy(step_dir / "success_mask.npy", success_mask.astype(np.float64))
+            _save_image(step_dir / "maps", "relative_uncertainty", rel_map, config.logging.save_previews)
+            _save_image(step_dir / "maps", "residual_sigma", z_map, config.logging.save_previews)
         for map_name, map_data in maps.items():
             _save_image(step_dir / "maps", map_name, map_data, config.logging.save_previews)
             if config.evaluation.save_error_maps and truth and "error" not in truth:
                 pass
         write_json(step_dir / "members.json", {"members": member_records, "consensus": cons_record})
-        write_json(step_dir / "gate.json", gate.as_dict())
+        gate_record = gate.as_dict()
+        if spatial_payload is not None:
+            gate_record["spatial"] = spatial_payload
+            gate_record["decision"] = decision
+            gate_record["continue_recursion"] = continue_recursion
+        write_json(step_dir / "gate.json", gate_record)
         print(
-            f"gate={gate.decision} agreement={stats['mean_agreement']:.4f} "
-            f"chi2={chi2:.3f} flux_rel={flux_err:.4f} continue={gate.continue_recursion}",
+            f"gate={decision} agreement={stats['mean_agreement']:.4f} "
+            f"chi2={chi2:.3f} flux_rel={flux_err:.4f} keep={success_fraction:.3f} "
+            f"retry_tiles={n_retry_tiles} continue={continue_recursion}",
             flush=True,
         )
         if truth:
@@ -231,27 +323,30 @@ def run_experiment(
             "mean_relative_uncertainty": stats["mean_relative_uncertainty"],
             "reduced_chi2": chi2,
             "flux_rel_error": flux_err,
-            "decision": gate.decision,
-            "continue_recursion": gate.continue_recursion,
-            "reasons": gate.reasons,
+            "decision": decision,
+            "continue_recursion": continue_recursion,
+            "success_fraction": success_fraction,
+            "n_retry_tiles": n_retry_tiles,
+            "reasons": gate.reasons if decision.startswith("rejected") else [decision],
             "would_reject": gate.would_reject,
             "truth_metrics": truth,
         }
         step_summaries.append(summary)
-        if gate.decision != "accepted":
+        if decision.startswith("rejected"):
             failures.append(
-                f"step {step_index}: {gate.decision} agreement={stats['mean_agreement']:.4f} "
-                f"chi2={chi2:.3f} flux_rel={flux_err:.4f}"
+                f"step {step_index}: {decision} agreement={stats['mean_agreement']:.4f} "
+                f"chi2={chi2:.3f} flux_rel={flux_err:.4f} keep={success_fraction:.3f}"
             )
-            stop_reason = gate.decision
+            stop_reason = decision
             break
-        last_accepted = consensus
-        disagreement_accepted = mad_map
+        last_accepted = product
+        disagreement_accepted = product_mad
         accepted_depth = step_index + 1
-        current = consensus
-        stop_reason = "max_depth_reached" if not gate.continue_recursion else "accepted_continue"
-        if not gate.continue_recursion:
+        current = product
+        if last_step or not continue_recursion:
+            stop_reason = "max_depth_reached" if last_step else decision
             break
+        stop_reason = "accepted_continue"
 
     accepted_dir = run_dir / "accepted"
     _save_image(accepted_dir, "reconstruction", last_accepted, config.logging.save_previews)

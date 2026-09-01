@@ -51,3 +51,6 @@ def test_cli_run_fake(tmp_path: Path) -> None:
     report = runner.invoke(app, ["report", "--run-id", run_id, "--output-dir", str(tmp_path)])
     assert report.exit_code == 0, report.output
     assert "Research question" in report.output
+    assert "Results vs held-out reference" in report.output
+    assert "Results vs held-out reference" in result.output
+    assert "| method | psnr |" in result.output
