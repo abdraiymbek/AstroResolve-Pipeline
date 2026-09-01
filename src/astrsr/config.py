@@ -147,7 +147,7 @@ class SpatialConfig(FrozenModel):
     retry_failed_tiles: bool = True
     min_tile: int = 16
     overlap: int = 4
-    max_retries: int = 1
+    max_retries: int = 10
     min_success_fraction_to_continue: float = 0.25
     max_residual_sigma: float = 2.5
 

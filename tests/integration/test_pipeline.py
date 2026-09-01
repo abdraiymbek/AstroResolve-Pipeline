@@ -28,6 +28,9 @@ def test_pipeline_fake_sr_end_to_end(tmp_path: Path) -> None:
     }
     assert (run_dir / "steps" / "00" / "success_mask.npy").is_file()
     assert (run_dir / "steps" / "00" / "mosaic.npy").is_file()
+    assert (run_dir / "steps" / "00" / "retry_history.json").is_file()
+    assert result["steps"][0]["retry_history"][0]["retry"] == 0
+    assert (run_dir / "steps" / "00" / "maps" / "error_vs_truth.npy").is_file()
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert "## Results vs held-out reference" in report
     assert "accepted product" in report

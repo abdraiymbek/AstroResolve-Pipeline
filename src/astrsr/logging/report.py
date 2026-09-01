@@ -52,6 +52,7 @@ def results_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "ssim": tm.get("ssim"),
                 "flux_error": tm.get("flux_error"),
                 "centroid_error": tm.get("centroid_error"),
+                "error_vs_truth_rate": tm.get("error_vs_truth_rate"),
                 "note": " ".join(
                     part for part in (str(step.get("decision", "")), keep) if part
                 ),
@@ -68,6 +69,7 @@ def results_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "ssim": tm.get("ssim"),
             "flux_error": tm.get("flux_error"),
             "centroid_error": tm.get("centroid_error"),
+            "error_vs_truth_rate": tm.get("error_vs_truth_rate"),
             "note": f"depth {acc.get('depth')} {acc.get('stop_reason', '')}".strip(),
         }
     )
@@ -76,16 +78,53 @@ def results_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def render_results_table(rows: list[dict[str, Any]]) -> str:
     lines = [
-        "| method | psnr | ssim | flux_error | centroid_error | note |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| method | psnr | ssim | flux_error | centroid_error | error_vs_truth | note |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows:
         lines.append(
             f"| {row.get('name', '')} | {_fmt_metric(row.get('psnr'))} | "
             f"{_fmt_metric(row.get('ssim'))} | {_fmt_metric(row.get('flux_error'))} | "
-            f"{_fmt_metric(row.get('centroid_error'))} | {row.get('note', '')} |"
+            f"{_fmt_metric(row.get('centroid_error'))} | {_fmt_pct(row.get('error_vs_truth_rate'))} | "
+            f"{row.get('note', '')} |"
         )
     return "\n".join(lines)
+
+
+def retry_history_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for step in payload.get("steps") or []:
+        for row in step.get("retry_history") or []:
+            rows.append({**row, "step": step.get("index")})
+    return rows
+
+
+def render_retry_table(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "| retry | accepted | psnr | ssim | flux_error | error_vs_truth | tiles |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        accepted = row.get("accepted")
+        accepted_txt = "" if accepted is None else f"{100.0 * float(accepted):.2f}%"
+        lines.append(
+            f"| {row.get('retry', '')} | {accepted_txt} | {_fmt_metric(row.get('psnr'))} | "
+            f"{_fmt_metric(row.get('ssim'))} | {_fmt_metric(row.get('flux_error'))} | "
+            f"{_fmt_pct(row.get('error_vs_truth_rate'))} | {row.get('n_tiles', '')} |"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_pct(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(number):
+        return str(value)
+    return f"{number:.2f}%"
 
 
 def render_report(payload: dict[str, Any]) -> str:
@@ -131,9 +170,24 @@ def render_report(payload: dict[str, Any]) -> str:
     lines.append(
         "One-shot rows are each method alone. "
         "`gated mosaic` is the spatial keep after this 2x. "
-        "`accepted product` is what the algorithm returns, including a freeze at the observation if nothing passed."
+        "`accepted product` is what the algorithm returns, including a freeze at the observation if nothing passed. "
+        "`error_vs_truth` is 0% if identical to the held-out reference and 100% for total loss, "
+        "from PSNR, SSIM, and flux error."
     )
     lines.append("")
+    retry_rows = retry_history_rows(payload)
+    if retry_rows:
+        lines.append("## Retry trajectory")
+        lines.append("")
+        lines.append(render_retry_table(retry_rows))
+        lines.append("")
+        lines.append(
+            "Retry 0 is the first full-field 2x. Each later row is another ensemble on whatever "
+            "pixels still fail, up to `recursion.spatial.max_retries` for the whole 2x. "
+            "Passing pixels are not redone. If accepted rises while error_vs_truth also rises, "
+            "the retries are getting more confident and more wrong."
+        )
+        lines.append("")
     lines.append("## Recursion")
     lines.append("")
     for step in payload["steps"]:

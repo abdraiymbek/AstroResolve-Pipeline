@@ -1,4 +1,10 @@
-from astrsr.logging.report import render_report, render_results_table, results_table_rows
+from astrsr.logging.report import (
+    render_report,
+    render_results_table,
+    render_retry_table,
+    results_table_rows,
+    retry_history_rows,
+)
 
 
 def _payload() -> dict:
@@ -30,7 +36,28 @@ def _payload() -> dict:
                 "decision": "accepted_spatial",
                 "continue_recursion": False,
                 "success_fraction": 0.42,
+                "error_vs_truth_rate": 18.2,
                 "n_retry_tiles": 4,
+                "retry_history": [
+                    {
+                        "retry": 0,
+                        "accepted": 0.42,
+                        "n_tiles": 0,
+                        "psnr": 23.64,
+                        "ssim": 0.48,
+                        "flux_error": 0.064,
+                        "error_vs_truth_rate": 18.2,
+                    },
+                    {
+                        "retry": 1,
+                        "accepted": 0.51,
+                        "n_tiles": 4,
+                        "psnr": 23.9,
+                        "ssim": 0.49,
+                        "flux_error": 0.05,
+                        "error_vs_truth_rate": 16.0,
+                    },
+                ],
                 "truth_metrics": {
                     "psnr": 23.64,
                     "ssim": 0.48,
@@ -59,8 +86,17 @@ def test_results_table_includes_mosaic_and_product() -> None:
     assert "gated mosaic 2x" in names
     assert "accepted product" in names
     table = render_results_table(rows)
-    assert "| method | psnr | ssim | flux_error | centroid_error | note |" in table
+    assert "| method | psnr | ssim | flux_error | centroid_error | error_vs_truth | note |" in table
     assert "keep 42%" in table
+
+
+def test_retry_table_lists_each_pass() -> None:
+    rows = retry_history_rows(_payload())
+    assert [row["retry"] for row in rows] == [0, 1]
+    table = render_retry_table(rows)
+    assert "42.00%" in table
+    assert "51.00%" in table
+    assert "18.20%" in table
 
 
 def test_report_puts_results_table_near_the_top() -> None:
@@ -70,3 +106,4 @@ def test_report_puts_results_table_near_the_top() -> None:
     assert results_at < recursion_at
     assert "gated mosaic 2x" in markdown
     assert "accepted product" in markdown
+    assert "## Retry trajectory" in markdown

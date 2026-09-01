@@ -30,7 +30,9 @@ Gate thresholds in the YAML are placeholders. A conservative `min_agreement` wil
 
 After a run finishes, a markdown **results table** is printed at the end of the terminal output (one-shot methods, gated mosaic, accepted product). The same table is in `runs/<run_id>/report.md` under **Results vs held-out reference**. Re-print it with `uv run astrsr report --run-id <id>`.
 
-Spatial keep defaults live under `recursion.spatial` in config (`enabled`, `max_residual_sigma`, `retry_failed_tiles`, `min_tile`, `overlap`, `max_retries`, `min_success_fraction_to_continue`). Step artifacts include `mosaic.npy` and `success_mask.npy`.
+Spatial keep defaults live under `recursion.spatial`. **`max_retries` (default 10) is one budget for the entire 2x step**, not per tile and not reset when a small fraction fails: retry 0 is the first full-field ensemble; retries 1–10 re-attack only pixels that still fail, while passing pixels stay frozen. Step artifacts include `success_mask.npy`, per-retry mosaics under `steps/00/retries/rXX/`, and `error_vs_truth.npy` (0% = identical to held-out reference at that pixel, 100% = total loss, from local PSNR/SSIM/flux terms).
+
+After a run, the terminal and `report.md` show two tables: **Results vs held-out reference** (final one-shots + gated product) and **Retry trajectory** (accepted fraction, metrics, and `error_vs_truth` after each retry pass).
 
 The ensemble can be one network sampled many times (`ensemble.mode=stochastic_single`) or a zoo of different reconstructors (`ensemble.mode=model_zoo`). Galaxy Restormer is skipped if `checkpoints/galaxy_pretrained_model.pth` is missing.
 

@@ -3,6 +3,8 @@ import numpy as np
 from astrsr.evaluation.metrics import (
     centroid,
     centroid_error,
+    error_vs_truth_map,
+    error_vs_truth_rate,
     evaluate_against_reference,
     flux_rel_error,
     psnr,
@@ -34,3 +36,19 @@ def test_evaluate_coarser_estimate_downsamples_reference() -> None:
     metrics = evaluate_against_reference(reference, coarse, None, win_size=3)
     assert metrics["compared_at_shape"] == [2, 2]
     assert metrics["psnr"] == float("inf")
+    assert metrics["error_vs_truth_rate"] == 0.0
+
+
+def test_error_vs_truth_identity_is_zero() -> None:
+    assert error_vs_truth_rate(float("inf"), 1.0, 0.0) == 0.0
+
+
+def test_error_vs_truth_total_loss_is_hundred() -> None:
+    assert error_vs_truth_rate(0.0, 0.0, 1.0) == 100.0
+
+
+def test_error_vs_truth_map_identity_is_zero() -> None:
+    image = np.linspace(0, 1, 64).reshape(8, 8)
+    err_map = error_vs_truth_map(image, image, win_size=3)
+    assert err_map.shape == image.shape
+    assert float(err_map.max()) < 1e-6

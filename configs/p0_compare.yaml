@@ -79,7 +79,7 @@ recursion:
     retry_failed_tiles: true
     min_tile: 16
     overlap: 4
-    max_retries: 1
+    max_retries: 10
     min_success_fraction_to_continue: 0.25
     max_residual_sigma: 2.5
   gates:

@@ -53,6 +53,60 @@ def flux_rel_error(reference: np.ndarray, estimate: np.ndarray) -> float:
     return abs(est_flux - ref_flux) / denom
 
 
+def _error_vs_truth_terms(
+    psnr_value: float | None,
+    ssim_value: float | None,
+    flux_error: float | None,
+) -> list[float]:
+    terms: list[float] = []
+    if psnr_value == float("inf") or (psnr_value is not None and psnr_value == np.inf):
+        terms.append(0.0)
+    elif psnr_value is not None and np.isfinite(psnr_value):
+        terms.append(float(min(1.0, 10.0 ** (-float(psnr_value) / 20.0))))
+    if ssim_value is not None and np.isfinite(ssim_value):
+        terms.append(float(min(1.0, max(0.0, 1.0 - float(ssim_value)))))
+    if flux_error is not None and np.isfinite(flux_error):
+        terms.append(float(min(1.0, max(0.0, float(flux_error)))))
+    return terms
+
+
+def error_vs_truth_rate(psnr_value: float, ssim_value: float, flux_error: float) -> float:
+    """0% is identical to truth. 100% is total loss. Mean of PSNR, SSIM, and flux terms."""
+    terms = _error_vs_truth_terms(psnr_value, ssim_value, flux_error)
+    if not terms:
+        return 100.0
+    return 100.0 * float(sum(terms) / len(terms))
+
+
+def _ssim_win_size(reference: np.ndarray, win_size: int) -> int:
+    odd = win_size if win_size % 2 == 1 else win_size - 1
+    max_win = int(min(reference.shape))
+    if max_win < 3:
+        return 3
+    if max_win % 2 == 0:
+        max_win -= 1
+    return max(3, min(odd, max_win))
+
+
+def error_vs_truth_map(reference: np.ndarray, estimate: np.ndarray, win_size: int = 7) -> np.ndarray:
+    """Per-pixel error vs truth in percent. 0 is exact, 100 is total loss at that pixel."""
+    matched, ref = align_for_comparison(estimate, reference)
+    data_range = _data_range(ref)
+    abs_term = np.clip(np.abs(matched - ref) / data_range, 0.0, 1.0)
+    odd = _ssim_win_size(ref, win_size)
+    _, ssim_local = structural_similarity(
+        ref,
+        matched,
+        data_range=data_range,
+        win_size=odd,
+        full=True,
+    )
+    ssim_term = np.clip(1.0 - ssim_local, 0.0, 1.0)
+    flux_term = min(1.0, max(0.0, flux_rel_error(ref, matched)))
+    flux_map = np.full_like(abs_term, flux_term)
+    return 100.0 * (abs_term + ssim_term + flux_map) / 3.0
+
+
 def centroid(image: np.ndarray) -> tuple[float, float]:
     data = np.clip(as_float_image(image), 0.0, None)
     total = data.sum()
@@ -120,12 +174,16 @@ def evaluate_against_reference(
 ) -> dict[str, Any]:
     matched, ref = align_for_comparison(estimate, reference)
     error = np.abs(matched - ref)
+    psnr_value = psnr(ref, matched)
+    ssim_value = ssim(ref, matched, win_size=win_size)
+    flux_value = flux_rel_error(ref, matched)
     metrics: dict[str, Any] = {
-        "psnr": psnr(ref, matched),
-        "ssim": ssim(ref, matched, win_size=win_size),
-        "flux_error": flux_rel_error(ref, matched),
+        "psnr": psnr_value,
+        "ssim": ssim_value,
+        "flux_error": flux_value,
         "centroid_error": centroid_error(ref, matched),
         "mean_abs_error": float(error.mean()),
+        "error_vs_truth_rate": error_vs_truth_rate(psnr_value, ssim_value, flux_value),
         "compared_at_shape": list(ref.shape),
         "estimate_shape": list(estimate.shape),
         "reference_shape": list(reference.shape),

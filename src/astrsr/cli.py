@@ -8,7 +8,12 @@ from typing import Optional
 import typer
 
 from astrsr.config import apply_overrides, load_yaml_config
-from astrsr.logging.report import render_results_table, results_table_rows
+from astrsr.logging.report import (
+    render_results_table,
+    render_retry_table,
+    results_table_rows,
+    retry_history_rows,
+)
 from astrsr.pipeline import run_experiment
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False, add_completion=False)
@@ -19,6 +24,12 @@ def _echo_results_table(result: dict) -> None:
     typer.echo("Results vs held-out reference")
     typer.echo("-" * 60)
     typer.echo(render_results_table(results_table_rows(result)))
+    retry_rows = retry_history_rows(result)
+    if retry_rows:
+        typer.echo("")
+        typer.echo("Retry trajectory")
+        typer.echo("-" * 60)
+        typer.echo(render_retry_table(retry_rows))
     typer.echo("-" * 60)
     typer.echo("Full report: report.md in run_dir (or: astrsr report --run-id <id>)")
 

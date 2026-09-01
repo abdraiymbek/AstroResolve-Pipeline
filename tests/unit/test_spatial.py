@@ -1,6 +1,6 @@
 import numpy as np
 
-from astrsr.config import RecursionConfig
+from astrsr.config import RecursionConfig, SpatialConfig
 from astrsr.recursion.spatial import (
     align_to_factor,
     apply_spatial_keep,
@@ -112,13 +112,13 @@ def test_retry_does_not_overwrite_success_pixels() -> None:
     mad = np.ones((8, 8))
     observation = np.ones((4, 4))
 
-    def retry_fn(crop: np.ndarray, tile_index: int) -> tuple[np.ndarray, np.ndarray]:
-        del tile_index
+    def retry_fn(crop: np.ndarray, tile_index: int, retry_pass: int) -> tuple[np.ndarray, np.ndarray]:
+        del tile_index, retry_pass
         height, width = crop.shape
         return np.full((height * 2, width * 2), 9.0), np.full((height * 2, width * 2), 0.1)
 
     out, out_mad, n_retry, boxes = retry_failed_into_mosaic(
-        mosaic, mask, mad, observation, scale_factor=2, min_tile=2, overlap=1, retry_fn=retry_fn
+        mosaic, mask, mad, observation, scale_factor=2, min_tile=2, overlap=1, retry_fn=retry_fn, retry_pass=1
     )
     assert n_retry >= 1
     assert boxes
@@ -150,3 +150,68 @@ def test_apply_spatial_keep_freezes_failures_without_retry() -> None:
     assert np.allclose(result.mosaic[:, :4], 1.0)
     assert np.allclose(result.mosaic[:, 4:], 2.0)
     assert result.n_retry_tiles == 0
+
+
+def test_retry_budget_is_for_the_whole_2x() -> None:
+    consensus = np.ones((8, 8))
+    mad = np.full((8, 8), 10.0)
+    residual = np.zeros((4, 4))
+    sigma = np.ones((4, 4))
+    fallback = np.ones((4, 4))
+    cfg = RecursionConfig(spatial=SpatialConfig(max_retries=3, min_tile=2, overlap=1))
+    seen: list[int] = []
+
+    def retry_fn(crop: np.ndarray, tile_index: int, retry_pass: int) -> tuple[np.ndarray, np.ndarray]:
+        del tile_index
+        seen.append(retry_pass)
+        height, width = crop.shape
+        return np.ones((height * 2, width * 2)), np.full((height * 2, width * 2), 10.0)
+
+    result = apply_spatial_keep(
+        consensus=consensus,
+        mad_map=mad,
+        residual=residual,
+        sigma=sigma,
+        fallback=fallback,
+        input_image=fallback,
+        total_scale=2,
+        scale_factor=2,
+        config=cfg,
+        retry_fn=retry_fn,
+    )
+    assert [snap.retry for snap in result.history] == [0, 1, 2, 3]
+    assert set(seen) == {1, 2, 3}
+
+
+def test_keep_is_monotonic_across_retries() -> None:
+    consensus = np.ones((8, 8))
+    mad = np.zeros((8, 8))
+    mad[:, 4:] = 10.0
+    residual = np.zeros((4, 4))
+    sigma = np.ones((4, 4))
+    fallback = np.full((4, 4), 2.0)
+    cfg = RecursionConfig(spatial=SpatialConfig(max_retries=2, min_tile=2, overlap=1))
+
+    def retry_fn(crop: np.ndarray, tile_index: int, retry_pass: int) -> tuple[np.ndarray, np.ndarray]:
+        del tile_index, retry_pass
+        height, width = crop.shape
+        return np.ones((height * 2, width * 2)), np.full((height * 2, width * 2), 1e-6)
+
+    result = apply_spatial_keep(
+        consensus=consensus,
+        mad_map=mad,
+        residual=residual,
+        sigma=sigma,
+        fallback=fallback,
+        input_image=fallback,
+        total_scale=2,
+        scale_factor=2,
+        config=cfg,
+        retry_fn=retry_fn,
+        reproject_fn=lambda mosaic: (np.zeros((4, 4)), np.ones((4, 4))),
+    )
+    first = result.history[0].mask
+    last = result.history[-1].mask
+    assert first[:, :4].all()
+    assert last[first].all()
+    assert last.mean() >= first.mean()

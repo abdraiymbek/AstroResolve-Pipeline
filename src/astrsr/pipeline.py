@@ -13,13 +13,30 @@ from astrsr.data.ingest import ingest_reference
 from astrsr.degradation.forward_model import degrade_reference, forward_project_to_observation
 from astrsr.ensemble.consensus import agreement_stats, build_consensus
 from astrsr.ensemble.sampler import sample_ensemble
-from astrsr.evaluation.metrics import evaluate_against_reference, flux_rel_error, reduced_chi2
+from astrsr.evaluation.metrics import (
+    evaluate_against_reference,
+    error_vs_truth_map,
+    flux_rel_error,
+    reduced_chi2,
+)
 from astrsr.logging.report import conclude, render_report
 from astrsr.models.registry import build_baseline, build_primary_model, build_zoo
 from astrsr.provenance import initialize_run, mark_completed, write_json
 from astrsr.recursion.gates import evaluate_gates
 from astrsr.recursion.spatial import apply_spatial_keep
 from astrsr.utils.arrays import save_fits, save_npy, save_preview_png
+
+
+def _save_truth_maps(
+    directory: Path,
+    reference: np.ndarray,
+    estimate: np.ndarray,
+    *,
+    win_size: int,
+    previews: bool,
+) -> None:
+    err_map = error_vs_truth_map(reference, estimate, win_size=win_size)
+    _save_image(directory, "error_vs_truth", err_map, previews)
 
 
 def _save_image(directory: Path, name: str, array: np.ndarray, previews: bool) -> None:
@@ -29,10 +46,22 @@ def _save_image(directory: Path, name: str, array: np.ndarray, previews: bool) -
         save_preview_png(directory / "previews" / f"{name}.png", array)
 
 
+def _json_metric(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
 def _metrics_row(name: str, metrics: dict[str, Any] | None) -> dict[str, Any]:
     row: dict[str, Any] = {"name": name}
     if metrics:
-        for key in ("psnr", "ssim", "flux_error", "centroid_error"):
+        for key in ("psnr", "ssim", "flux_error", "centroid_error", "error_vs_truth_rate"):
             value = metrics.get(key)
             row[key] = None if value is None else round(float(value), 6) if np.isfinite(value) else None
     return row
@@ -196,12 +225,12 @@ def run_experiment(
         last_step = step_index >= len(steps) - 1 or (step_index + 1) >= config.recursion.max_depth
 
         if config.recursion.spatial.enabled and not config.recursion.unconditional:
-            def _retry_fn(crop: np.ndarray, tile_index: int) -> tuple[np.ndarray, np.ndarray]:
+            def _retry_fn(crop: np.ndarray, tile_index: int, retry_pass: int) -> tuple[np.ndarray, np.ndarray]:
                 tile_members, _ = sample_ensemble(
                     crop,
                     models,
                     config.ensemble,
-                    base_seed=config.run.seed + step_index * 17 + 10_000 + tile_index,
+                    base_seed=config.run.seed + step_index * 17 + 10_000 + retry_pass * 9973 + tile_index,
                 )
                 tile_cons, tile_maps, _ = build_consensus(tile_members, config.ensemble)
                 tile_mad = tile_maps.get("mad", tile_maps.get("std"))
@@ -241,10 +270,56 @@ def run_experiment(
             success_mask = spatial.mask
             rel_map = spatial.relative_uncertainty
             z_map = spatial.residual_sigma
+            retry_history: list[dict[str, Any]] = []
+            for snap in spatial.history:
+                snap_truth: dict[str, Any] | None = None
+                if config.evaluation.compare_to_reference:
+                    try:
+                        snap_truth = evaluate_against_reference(
+                            reference,
+                            snap.mosaic,
+                            None,
+                            win_size=config.evaluation.ssim_win_size,
+                        )
+                    except ValueError as exc:
+                        snap_truth = {"error": str(exc)}
+                row = {
+                    "retry": snap.retry,
+                    "accepted": snap.success_fraction,
+                    "n_tiles": snap.n_tiles,
+                    "psnr": _json_metric(None if not snap_truth else snap_truth.get("psnr")),
+                    "ssim": _json_metric(None if not snap_truth else snap_truth.get("ssim")),
+                    "flux_error": _json_metric(None if not snap_truth else snap_truth.get("flux_error")),
+                    "error_vs_truth_rate": _json_metric(
+                        None if not snap_truth else snap_truth.get("error_vs_truth_rate")
+                    ),
+                }
+                retry_history.append(row)
+                retry_dir = run_dir / "steps" / f"{step_index:02d}" / "retries" / f"r{snap.retry:02d}"
+                retry_dir.mkdir(parents=True, exist_ok=True)
+                save_npy(retry_dir / "mosaic.npy", snap.mosaic)
+                if config.evaluation.compare_to_reference and config.evaluation.save_error_maps:
+                    _save_truth_maps(
+                        retry_dir,
+                        reference,
+                        snap.mosaic,
+                        win_size=config.evaluation.ssim_win_size,
+                        previews=config.logging.save_previews,
+                    )
+                err = row["error_vs_truth_rate"]
+                err_txt = "n/a" if err is None else f"{float(err):.2f}%"
+                print(
+                    f"retry {snap.retry}/{config.recursion.spatial.max_retries} "
+                    f"accepted={100.0 * snap.success_fraction:.2f}% "
+                    f"error_vs_truth={err_txt} tiles={snap.n_tiles}",
+                    flush=True,
+                )
             spatial_payload = {
                 "success_fraction": success_fraction,
                 "n_retry_tiles": n_retry_tiles,
                 "retry_tiles": [[int(a), int(b), int(c), int(d)] for a, b, c, d in spatial.retry_tiles],
+                "retry_history": retry_history,
+                "max_retries": config.recursion.spatial.max_retries,
                 "global_gate": gate.as_dict(),
             }
             if success_fraction <= 0.0:
@@ -289,8 +364,14 @@ def run_experiment(
             _save_image(step_dir / "maps", "residual_sigma", z_map, config.logging.save_previews)
         for map_name, map_data in maps.items():
             _save_image(step_dir / "maps", map_name, map_data, config.logging.save_previews)
-            if config.evaluation.save_error_maps and truth and "error" not in truth:
-                pass
+        if config.evaluation.save_error_maps and truth and "error" not in truth:
+            _save_truth_maps(
+                step_dir / "maps",
+                reference,
+                product,
+                win_size=config.evaluation.ssim_win_size,
+                previews=config.logging.save_previews,
+            )
         write_json(step_dir / "members.json", {"members": member_records, "consensus": cons_record})
         gate_record = gate.as_dict()
         if spatial_payload is not None:
@@ -298,6 +379,8 @@ def run_experiment(
             gate_record["decision"] = decision
             gate_record["continue_recursion"] = continue_recursion
         write_json(step_dir / "gate.json", gate_record)
+        if spatial_payload is not None:
+            write_json(step_dir / "retry_history.json", spatial_payload.get("retry_history") or [])
         print(
             f"gate={decision} agreement={stats['mean_agreement']:.4f} "
             f"chi2={chi2:.3f} flux_rel={flux_err:.4f} keep={success_fraction:.3f} "
@@ -327,6 +410,7 @@ def run_experiment(
             "continue_recursion": continue_recursion,
             "success_fraction": success_fraction,
             "n_retry_tiles": n_retry_tiles,
+            "retry_history": spatial_payload.get("retry_history") if spatial_payload else [],
             "reasons": gate.reasons if decision.startswith("rejected") else [decision],
             "would_reject": gate.would_reject,
             "truth_metrics": truth,
@@ -362,6 +446,14 @@ def run_experiment(
             )
         except ValueError as exc:
             accepted_truth = {"error": str(exc)}
+    if config.evaluation.compare_to_reference and config.evaluation.save_error_maps and accepted_truth and "error" not in accepted_truth:
+        _save_truth_maps(
+            accepted_dir,
+            reference,
+            last_accepted,
+            win_size=config.evaluation.ssim_win_size,
+            previews=config.logging.save_previews,
+        )
 
     report_payload: dict[str, Any] = {
         "title": f"astrsr run {run_id}",

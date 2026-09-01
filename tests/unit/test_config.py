@@ -41,6 +41,7 @@ def test_p0_fake_yaml_loads() -> None:
     cfg = load_yaml_config(Path("configs/p0_fake.yaml"))
     assert cfg.models.pretrained.name == "fake_sr"
     assert cfg.recursion.spatial.enabled is True
+    assert cfg.recursion.spatial.max_retries == 10
 
 
 def test_spatial_override() -> None:

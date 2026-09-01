@@ -11,7 +11,7 @@ from scipy.ndimage import zoom
 from astrsr.config import RecursionConfig
 from astrsr.utils.arrays import as_float_image
 
-RetryFn = Callable[[np.ndarray, int], tuple[np.ndarray, np.ndarray]]
+RetryFn = Callable[[np.ndarray, int, int], tuple[np.ndarray, np.ndarray]]
 ReprojectFn = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
 
@@ -170,6 +170,15 @@ def hr_slices_to_lr(
 
 
 @dataclass
+class RetrySnapshot:
+    retry: int
+    mosaic: np.ndarray
+    mask: np.ndarray
+    success_fraction: float
+    n_tiles: int
+
+
+@dataclass
 class SpatialResult:
     mosaic: np.ndarray
     mask: np.ndarray
@@ -179,6 +188,7 @@ class SpatialResult:
     success_fraction: float
     n_retry_tiles: int
     retry_tiles: list[tuple[int, int, int, int]]
+    history: list[RetrySnapshot]
 
 
 def retry_failed_into_mosaic(
@@ -190,6 +200,7 @@ def retry_failed_into_mosaic(
     min_tile: int,
     overlap: int,
     retry_fn: RetryFn,
+    retry_pass: int,
 ) -> tuple[np.ndarray, np.ndarray, int, list[tuple[int, int, int, int]]]:
     """Blend retried tile consensus into failed pixels only. Success pixels stay put."""
     cons = as_float_image(mosaic).copy()
@@ -207,7 +218,7 @@ def retry_failed_into_mosaic(
         crop = as_float_image(input_image[lr_row, lr_col])
         if crop.size == 0 or min(crop.shape) < 2:
             continue
-        tile_cons, tile_mad = retry_fn(crop, tile_index)
+        tile_cons, tile_mad = retry_fn(crop, tile_index, retry_pass)
         expected = (row.stop - row.start, col.stop - col.start)
         if tile_cons.shape != expected:
             tile_cons = upsample_to_shape(tile_cons, expected)
@@ -252,6 +263,15 @@ def apply_spatial_keep(
     mosaic = mosaic_from_mask(cons, fallback, mask)
     n_retry = 0
     retry_boxes: list[tuple[int, int, int, int]] = []
+    history = [
+        RetrySnapshot(
+            retry=0,
+            mosaic=as_float_image(mosaic),
+            mask=mask.copy(),
+            success_fraction=float(mask.mean()),
+            n_tiles=0,
+        )
+    ]
     spatial = config.spatial
     if (
         spatial.enabled
@@ -263,7 +283,7 @@ def apply_spatial_keep(
     ):
         working_residual = residual
         working_sigma = sigma
-        for _ in range(spatial.max_retries):
+        for retry_pass in range(1, spatial.max_retries + 1):
             if mask.all():
                 break
             mosaic, combined_mad, n_this, boxes = retry_failed_into_mosaic(
@@ -275,15 +295,28 @@ def apply_spatial_keep(
                 spatial.min_tile,
                 spatial.overlap,
                 retry_fn,
+                retry_pass,
             )
+            if n_this == 0:
+                break
             n_retry += n_this
             retry_boxes.extend(boxes)
             if reproject_fn is not None:
                 working_residual, working_sigma = reproject_fn(mosaic)
-            mask, rel, z_hr = spatial_success_mask(
+            new_mask, rel, z_hr = spatial_success_mask(
                 mosaic, combined_mad, working_residual, working_sigma, total_scale, config
             )
+            mask = mask | new_mask
             mosaic = mosaic_from_mask(mosaic, fallback, mask)
+            history.append(
+                RetrySnapshot(
+                    retry=retry_pass,
+                    mosaic=as_float_image(mosaic),
+                    mask=mask.copy(),
+                    success_fraction=float(mask.mean()),
+                    n_tiles=n_this,
+                )
+            )
 
     return SpatialResult(
         mosaic=as_float_image(mosaic),
@@ -294,4 +327,5 @@ def apply_spatial_keep(
         success_fraction=float(mask.mean()),
         n_retry_tiles=n_retry,
         retry_tiles=retry_boxes,
+        history=history,
     )
