@@ -1,0 +1,89 @@
+run:
+  name: p0_fake
+  seed: 20260831
+  output_dir: runs
+  device: cpu
+  deterministic: true
+
+data:
+  source: synthetic_fixture
+  fixture: galaxy
+  size: 32
+  channels: [intensity]
+  preserve_units: true
+  normalization: documented_linear
+  split: test
+
+degradation:
+  enabled: true
+  scale_factor: 2
+  psf:
+    type: gaussian
+    fwhm_pixels: 1.5
+  sampling:
+    pixel_integration: true
+    kernel: area
+  noise:
+    shot: true
+    read_sigma: 0.01
+    background: 0.02
+  artifacts:
+    cosmic_ray_probability: 0.0
+    saturation: false
+
+models:
+  baselines: [bicubic, lanczos]
+  pretrained:
+    name: fake_sr
+    checkpoint: none
+    scale: 2
+    license: test-only
+    noise_sigma: 0.0
+    bias: 0.0
+
+ensemble:
+  enabled: true
+  samples: 4
+  stochasticity:
+    source: tta_and_input_noise
+    input_sigma_rel: 0.01
+    tta: true
+    seed_stride: 1000
+  retain_members: true
+  filtering:
+    method: mad
+    threshold: 3.5
+  consensus:
+    method: median
+    trim_fraction: 0.1
+  uncertainty:
+    maps: [std, mad, percentile_interval]
+    percentile_low: 10.0
+    percentile_high: 90.0
+
+recursion:
+  enabled: true
+  unconditional: false
+  factors: [2, 2]
+  max_depth: 2
+  gates:
+    min_agreement: 0.0
+    max_relative_uncertainty: 10.0
+    require_forward_consistency: true
+    max_reduced_chi2: 1000000.0
+    require_photometric_check: false
+    max_flux_rel_error: 1.0
+    max_metric_regression: 1.0
+
+evaluation:
+  metrics: [psnr, ssim, flux_error, centroid_error]
+  save_error_maps: true
+  compare_to_reference: true
+  ssim_win_size: 7
+
+logging:
+  save_config: true
+  save_environment: true
+  export_elabftw: true
+  include_failure_cases: true
+  save_previews: true

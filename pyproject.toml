@@ -1,0 +1,41 @@
+[project]
+name = "astrsr"
+version = "0.1.0"
+description = "Gated recursive astronomical super-resolution research pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "astropy>=6.1",
+    "einops>=0.8.2",
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "pillow>=10.4",
+    "pydantic>=2.8",
+    "pyyaml>=6.0",
+    "scikit-image>=0.24",
+    "scipy>=1.14",
+    "torch>=2.5",
+    "transformers>=4.44",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+astrsr = "astrsr.cli:app"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.uv]
+package = true
